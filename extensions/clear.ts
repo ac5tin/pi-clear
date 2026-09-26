@@ -80,7 +80,7 @@ export async function clearSession(args: string, ctx: ClearContext, deps: ClearD
     setup: oldName ? (sessionManager) => sessionManager.appendSessionInfo(oldName) : undefined,
     withSession: async (newCtx) => {
       const newPath = newCtx.sessionManager.getSessionFile();
-      if (!oldPath || oldPath === newPath) {
+      if (!oldPath || !newPath || oldPath === newPath) {
         ctx.ui.notify("Session cleared.", "info");
         return;
       }

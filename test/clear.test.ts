@@ -12,6 +12,7 @@ type Fixture = {
   execCalls: Array<{ command: string; args: string[] }>;
   notifications: Array<{ message: string; type: string | undefined }>;
   names: string[];
+  confirmations: Array<{ title: string; message: string }>;
 };
 
 function fixture(options: {
@@ -20,22 +21,27 @@ function fixture(options: {
   cancelled?: boolean;
   oldPath?: string;
   newPath?: string;
+  replacementPathUndefined?: boolean;
   name?: string;
   files?: string[];
+  directories?: string[];
 } = {}): Fixture {
   const files = new Set(options.files ?? [options.oldPath ?? "/sessions/old.jsonl"]);
+  const directories = new Set(options.directories ?? []);
   const events: string[] = [];
   const execCalls: Fixture["execCalls"] = [];
   const unlinks: string[] = [];
   const notifications: Fixture["notifications"] = [];
+  const confirmations: Array<{ title: string; message: string }> = [];
   const names: string[] = [];
   const prompts = { count: 0 };
 
   const ctx: ClearContext = {
     hasUI: options.hasUI ?? true,
     ui: {
-      async confirm() {
+      async confirm(title, message) {
         prompts.count++;
+        confirmations.push({ title, message });
         return options.confirm ?? true;
       },
       notify(message, type) {
@@ -58,7 +64,7 @@ function fixture(options: {
       });
       await sessionOptions.withSession?.({
         sessionManager: {
-          getSessionFile: () => options.newPath ?? "/sessions/new.jsonl",
+          getSessionFile: () => options.replacementPathUndefined ? undefined : options.newPath ?? "/sessions/new.jsonl",
         },
       });
       events.push("new-session-finished");
@@ -76,7 +82,7 @@ function fixture(options: {
       return files.has(filePath);
     },
     exists(filePath) {
-      return files.has(filePath);
+      return files.has(filePath) || directories.has(filePath);
     },
     async unlink(filePath) {
       unlinks.push(filePath);
@@ -85,7 +91,7 @@ function fixture(options: {
     },
   };
 
-  return { ctx, deps, files, events, prompts, unlinks, execCalls, notifications, names };
+  return { ctx, deps, files, events, prompts, unlinks, execCalls, notifications, names, confirmations };
 }
 
 test("does nothing without UI", async () => {
@@ -113,6 +119,10 @@ test("starts a new session, preserves the name, then trashes the old file", asyn
   assert.deepEqual(f.events, ["new-session-start", "name-written", "trash", "new-session-finished"]);
   assert.deepEqual(f.execCalls, [{ command: "trash", args: ["/sessions/old.jsonl"] }]);
   assert.deepEqual(f.unlinks, []);
+  assert.deepEqual(f.confirmations, [{
+    title: "Clear session?",
+    message: "This starts a new session and deletes the current session file.",
+  }]);
   assert.deepEqual(f.notifications, [{ message: "Session cleared.", type: "info" }]);
 });
 
@@ -131,7 +141,7 @@ test("does not delete when new session creation is cancelled", async () => {
 });
 
 test("does not delete a directory, missing path, or non-JSONL path", async () => {
-  const directory = fixture({ oldPath: "/sessions", files: ["/sessions"] });
+  const directory = fixture({ oldPath: "/sessions/data.jsonl", files: [], directories: ["/sessions/data.jsonl"] });
   await clearSession("", directory.ctx, directory.deps);
   assert.deepEqual(directory.execCalls, []);
   assert.deepEqual(directory.unlinks, []);
@@ -145,6 +155,13 @@ test("does not delete a directory, missing path, or non-JSONL path", async () =>
   await clearSession("", nonJsonl.ctx, nonJsonl.deps);
   assert.deepEqual(nonJsonl.execCalls, []);
   assert.deepEqual(nonJsonl.unlinks, []);
+});
+
+test("does not delete when the replacement path is undefined", async () => {
+  const f = fixture({ replacementPathUndefined: true });
+  await clearSession("", f.ctx, f.deps);
+  assert.deepEqual(f.execCalls, []);
+  assert.deepEqual(f.unlinks, []);
 });
 
 test("does not delete when the replacement path is unchanged", async () => {
