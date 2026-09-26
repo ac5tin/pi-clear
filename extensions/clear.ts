@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { stat, unlink } from "node:fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -21,7 +22,12 @@ export interface ClearContext {
   };
   newSession(options: {
     setup?: (sessionManager: { appendSessionInfo(name: string): void }) => Promise<void> | void;
-    withSession?: (ctx: { sessionManager: { getSessionFile(): string | undefined } }) => Promise<void> | void;
+    withSession?: (ctx: {
+      sessionManager: { getSessionFile(): string | undefined };
+      ui: {
+        notify(message: string, type?: "info" | "warning" | "error"): void;
+      };
+    }) => Promise<void> | void;
   }): Promise<{ cancelled: boolean }>;
 }
 
@@ -81,15 +87,15 @@ export async function clearSession(args: string, ctx: ClearContext, deps: ClearD
     withSession: async (newCtx) => {
       const newPath = newCtx.sessionManager.getSessionFile();
       if (!oldPath || !newPath || oldPath === newPath) {
-        ctx.ui.notify("Session cleared.", "info");
+        newCtx.ui.notify("Session cleared.", "info");
         return;
       }
 
       const result = await deleteSessionFile(oldPath, deps);
       if (result.ok) {
-        ctx.ui.notify("Session cleared.", "info");
+        newCtx.ui.notify("Session cleared.", "info");
       } else {
-        ctx.ui.notify(
+        newCtx.ui.notify(
           `New session started, but could not delete ${oldPath}: ${result.error}`,
           "error",
         );
@@ -100,7 +106,14 @@ export async function clearSession(args: string, ctx: ClearContext, deps: ClearD
 
 export default function (pi: ExtensionAPI) {
   const deps: ClearDependencies = {
-    exec: (command, args) => pi.exec(command, args),
+    async exec(command, args) {
+      const result = spawnSync(command, args, { encoding: "utf-8" });
+      const stderr = [
+        result.error instanceof Error ? result.error.message : "",
+        result.stderr ?? "",
+      ].filter(Boolean).join("\n");
+      return { code: result.status ?? 1, stderr };
+    },
     isFile: async (filePath) => {
       try {
         return (await stat(filePath)).isFile();

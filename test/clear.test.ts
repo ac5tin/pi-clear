@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clearSession, deleteSessionFile, type ClearContext, type ClearDependencies } from "../extensions/clear.ts";
+import registerClearExtension, { clearSession, deleteSessionFile, type ClearContext, type ClearDependencies } from "../extensions/clear.ts";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 type Fixture = {
   ctx: ClearContext;
@@ -65,6 +68,11 @@ function fixture(options: {
       await sessionOptions.withSession?.({
         sessionManager: {
           getSessionFile: () => options.replacementPathUndefined ? undefined : options.newPath ?? "/sessions/new.jsonl",
+        },
+        ui: {
+          notify(message, type) {
+            notifications.push({ message, type });
+          },
         },
       });
       events.push("new-session-finished");
@@ -218,4 +226,58 @@ test("reports unlink failure while keeping the new session active", async () => 
   assert.equal(f.notifications[0]?.type, "error");
   assert.match(f.notifications[0]?.message ?? "", /\/sessions\/old\.jsonl/);
   assert.match(f.notifications[0]?.message ?? "", /permission denied/);
+});
+
+test("uses the replacement context and does not call captured pi.exec", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-clear-"));
+  const oldPath = join(directory, "old.jsonl");
+  const newPath = join(directory, "new.jsonl");
+  await writeFile(oldPath, "old session");
+
+  let piExecCalls = 0;
+  let command: ((args: string, ctx: ClearContext) => Promise<void>) | undefined;
+  const replacementNotifications: Array<{ message: string; type: string | undefined }> = [];
+  const pi = {
+    async exec() {
+      piExecCalls++;
+      throw new Error("stale pi");
+    },
+    registerCommand(_name: string, options: { handler: unknown }) {
+      command = options.handler as (args: string, ctx: ClearContext) => Promise<void>;
+    },
+  };
+
+  try {
+    registerClearExtension(pi as never);
+    if (!command) throw new Error("clear command was not registered");
+
+    const ctx: ClearContext = {
+      hasUI: true,
+      ui: {
+        async confirm() {
+          return true;
+        },
+        notify() {
+          throw new Error("stale old context");
+        },
+      },
+      sessionManager: {
+        getSessionFile: () => oldPath,
+        getSessionName: () => undefined,
+      },
+      async newSession(options) {
+        await options.withSession?.({
+          sessionManager: { getSessionFile: () => newPath },
+          ui: { notify: (message, type) => replacementNotifications.push({ message, type }) },
+        } as never);
+        return { cancelled: false };
+      },
+    };
+
+    await command("", ctx);
+    assert.equal(piExecCalls, 0);
+    assert.deepEqual(replacementNotifications, [{ message: "Session cleared.", type: "info" }]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
